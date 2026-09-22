@@ -21,6 +21,10 @@ services:
       # snapshot baked into the image instead -- the service still starts.
       SCHEME_MASTER: ${SCHEME_MASTER:-}
       RISK: ${RISK:-}
+      # Base URL for CMOTS's per-scheme Historical NAV endpoint. Leave blank to
+      # disable the dashboard's point-to-point return feature -- there is no
+      # fixture fallback for it, unlike the two feeds above.
+      HISTORICAL_NAV_URL: ${HISTORICAL_NAV_URL:-}
       # Required in production; POST /api/refresh returns 503 without it.
       REFRESH_TOKEN: ${REFRESH_TOKEN:?set REFRESH_TOKEN in .env}
       # The dashboard's public URL. The browser calls the API cross-origin, so
