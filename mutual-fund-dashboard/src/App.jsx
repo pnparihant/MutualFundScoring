@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 
+import { postPointToPointReturns } from './api/fundsApi'
 import AppHeader from './components/AppHeader'
 import { ConnectionBanner, StaleDataBanner } from './components/Banner'
 import FundCards from './components/FundCards'
@@ -90,6 +91,11 @@ export default function App() {
   const [pageSize, setPageSize] = useState(50)
   const [selectedId, setSelectedId] = useState(null)
 
+  const [returnRange, setReturnRange] = useState(null)
+  const [p2pReturns, setP2pReturns] = useState(null)
+  const [returnsLoading, setReturnsLoading] = useState(false)
+  const [returnsError, setReturnsError] = useState(null)
+
   const debouncedQuery = useDebouncedValue(query, 200)
 
   const categoryOptions = useMemo(() => distinctValues(funds, 'category'), [funds])
@@ -111,7 +117,18 @@ export default function App() {
   )
 
   const filtered = useMemo(() => filterFunds(funds, filters), [funds, filters])
-  const sorted = useMemo(() => sortFunds(filtered, sort.key, sort.direction), [filtered, sort])
+
+  /* p2pReturn is merged in before sorting (not after) so a header click can
+     sort by it like any other column -- see sortValueFor() in fundsView.js. */
+  const withReturns = useMemo(() => {
+    if (!p2pReturns) return filtered
+    return filtered.map((row) => ({ ...row, p2pReturn: p2pReturns[String(row.schcode)] ?? null }))
+  }, [filtered, p2pReturns])
+
+  const sorted = useMemo(
+    () => sortFunds(withReturns, sort.key, sort.direction),
+    [withReturns, sort],
+  )
 
   const summary = useMemo(() => summarise(sorted), [sorted])
   const ratingCounts = useMemo(() => {
@@ -189,6 +206,38 @@ export default function App() {
     setHiddenGroups((current) =>
       current.includes(group) ? current.filter((item) => item !== group) : [...current, group],
     )
+  }, [])
+
+  /* Fetched against the currently filtered (not yet paginated/sorted-by-return)
+     set -- a live bulk network call, one HTTP request per scheme on the
+     backend, so it only runs when the user explicitly asks for a range. */
+  const handleApplyReturnRange = useCallback(
+    async (range) => {
+      setReturnRange(range)
+      setReturnsLoading(true)
+      setReturnsError(null)
+      try {
+        const schcodes = filtered.map((row) => row.schcode)
+        const { returns } = await postPointToPointReturns({
+          schcodes,
+          startDate: range.startDate,
+          endDate: range.endDate,
+        })
+        setP2pReturns(returns)
+      } catch (err) {
+        setReturnsError(err.message || 'Failed to load returns')
+        setP2pReturns(null)
+      } finally {
+        setReturnsLoading(false)
+      }
+    },
+    [filtered],
+  )
+
+  const handleClearReturnRange = useCallback(() => {
+    setReturnRange(null)
+    setP2pReturns(null)
+    setReturnsError(null)
   }, [])
 
   const handleReset = useCallback(() => {
@@ -315,6 +364,11 @@ export default function App() {
             hasActiveFilters={hasActiveFilters}
             resultCount={sorted.length}
             isCompact={isCompact}
+            returnRange={returnRange}
+            returnsLoading={returnsLoading}
+            returnsError={returnsError}
+            onApplyReturnRange={handleApplyReturnRange}
+            onClearReturnRange={handleClearReturnRange}
           />
 
           {showSkeleton ? (
@@ -355,6 +409,7 @@ export default function App() {
                   onSort={handleSort}
                   selectedId={selectedId}
                   onSelect={handleSelect}
+                  returnColumnLabel={returnRange ? returnRange.label ?? 'Custom' : null}
                 />
               )}
 
@@ -371,7 +426,7 @@ export default function App() {
 
         <footer className={styles.footer}>
           <p>
-            Scored on {columns.length} parameters from the Arihant equity scoring matrix. Composite is
+            Scored on {columns.length} parameters from the Arihant mutual fund scoring matrix. Composite is
             the weighted mean of the parameters that could be scored; ratings follow the matrix’s own
             bands.
           </p>

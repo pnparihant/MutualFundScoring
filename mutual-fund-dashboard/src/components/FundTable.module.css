@@ -85,6 +85,11 @@
   box-shadow: inset 0 -3px 0 var(--border-strong);
 }
 
+.groupPointtoPointReturn {
+  color: var(--brand);
+  box-shadow: inset 0 -3px 0 var(--brand-vivid);
+}
+
 .th {
   position: sticky;
   top: 2.5rem;

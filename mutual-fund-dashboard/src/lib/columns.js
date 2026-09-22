@@ -11,12 +11,8 @@ import { DASH, formatCrore, formatNumber, formatPercent } from './format'
  * `metrics` keys are the column headers of the dataset workbook.
  */
 export const PARAM_METRICS = {
-  rolling_returns_vs_benchmark: {
-    keys: ['Rolling Returns 3Y (%)', 'Rolling Returns 5Y (%)'],
-    format: 'percent',
-    // scored on the blend of the two, against the category peer average
-    joiner: ' / ',
-  },
+  rolling_returns_3y: { keys: ['Rolling Returns 3Y (%)'], format: 'percent' },
+  rolling_returns_5y: { keys: ['Rolling Returns 5Y (%)'], format: 'percent' },
   alpha_3y: { keys: ['Alpha (3Y)'], format: 'number' },
   cagr_vs_category_avg: { keys: ['CAGR vs Category Avg 5Y (%)'], format: 'percent' },
   sd_vs_category: { keys: ['Standard Deviation (vs Category)'], format: 'number' },

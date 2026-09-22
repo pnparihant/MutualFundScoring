@@ -34,12 +34,12 @@ export default function AppHeader({
   return (
     <header className={styles.header}>
       <div className={styles.identity}>
-        <a className={styles.logoLink} href="/" aria-label="Arihant Capital — Equity Fund Scoring">
+        <a className={styles.logoLink} href="/" aria-label="Arihant Capital — Mutual Fund Scoring">
           <ArihantLogo variant="full" className={styles.logo} />
         </a>
         <span className={styles.divider} aria-hidden="true" />
         <div className={styles.titles}>
-          <h1 className={styles.title}>Equity Fund Scoring</h1>
+          <h1 className={styles.title}>Mutual Fund Scoring</h1>
           <p className={styles.subtitle}>
             {fundCount ? `${fundCount.toLocaleString('en-IN')} funds` : 'Loading'}
             {paramCount ? ` · ${paramCount} parameters` : null}

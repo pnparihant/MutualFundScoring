@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import { RETURN_RANGE_PRESETS, todayISODate, trailingRange } from '../lib/dateRanges'
 import { FUND_INFO_GROUP } from '../lib/fundsView'
-import { CloseIcon, DownloadIcon, LayersIcon, SearchIcon, SparkIcon } from './icons'
+import { CalendarIcon, CloseIcon, DownloadIcon, LayersIcon, SearchIcon, SparkIcon } from './icons'
 import MultiSelect from './MultiSelect'
 import styles from './Toolbar.module.css'
 
@@ -35,8 +36,31 @@ export default function Toolbar({
   hasActiveFilters,
   resultCount,
   isCompact,
+  returnRange,
+  returnsLoading,
+  returnsError,
+  onApplyReturnRange,
+  onClearReturnRange,
 }) {
   const searchRef = useRef(null)
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState(todayISODate())
+
+  const activePresetMonths = returnRange?.months ?? null
+
+  const handlePresetClick = (preset) => {
+    const { startDate, endDate } = trailingRange(preset.months)
+    setCustomStart(startDate)
+    setCustomEnd(endDate)
+    onApplyReturnRange({ startDate, endDate, label: preset.label, months: preset.months })
+  }
+
+  const handleCustomApply = () => {
+    if (!customStart || !customEnd || customStart >= customEnd) return
+    onApplyReturnRange({ startDate: customStart, endDate: customEnd, label: null, months: null })
+  }
+
+  const customValid = customStart && customEnd && customStart < customEnd
 
   /* "/" to search is the convention for data-dense tools; Escape clears. */
   useEffect(() => {
@@ -158,6 +182,65 @@ export default function Toolbar({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className={styles.returnsRow}>
+        <CalendarIcon width={15} height={15} className={styles.returnsIcon} />
+        <span className={styles.returnsLabel}>Point-to-point return</span>
+
+        <div className={styles.presets}>
+          {RETURN_RANGE_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className={`${styles.preset} ${
+                activePresetMonths === preset.months ? styles.presetActive : ''
+              }`}
+              onClick={() => handlePresetClick(preset)}
+              aria-pressed={activePresetMonths === preset.months}
+              title={`Trailing ${preset.label} return, from today`}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        <div className={styles.returnsCustom}>
+          <input
+            type="date"
+            className={styles.dateInput}
+            value={customStart}
+            max={customEnd || undefined}
+            onChange={(event) => setCustomStart(event.target.value)}
+            aria-label="Return range start date"
+          />
+          <span className={styles.returnsCustomSep}>to</span>
+          <input
+            type="date"
+            className={styles.dateInput}
+            value={customEnd}
+            min={customStart || undefined}
+            max={todayISODate()}
+            onChange={(event) => setCustomEnd(event.target.value)}
+            aria-label="Return range end date"
+          />
+          <button
+            type="button"
+            className={styles.button}
+            onClick={handleCustomApply}
+            disabled={!customValid || returnsLoading}
+          >
+            {returnsLoading ? 'Loading…' : 'Show returns'}
+          </button>
+          {returnRange ? (
+            <button type="button" className={styles.buttonGhost} onClick={onClearReturnRange}>
+              <CloseIcon width={14} height={14} />
+              Clear
+            </button>
+          ) : null}
+        </div>
+
+        {returnsError ? <span className={styles.returnsError}>{returnsError}</span> : null}
       </div>
 
       <div className={styles.displayRow}>

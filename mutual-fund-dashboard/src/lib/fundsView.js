@@ -80,6 +80,7 @@ export function sortValueFor(row, sortKey) {
   if (sortKey.startsWith('group:')) return row.category_scores?.[sortKey.slice(6)] ?? null
   if (sortKey === 'manager') return row.metrics?.['Fund Manager'] ?? ''
   if (sortKey === 'benchmark') return row.metrics?.['Benchmark Name'] ?? ''
+  if (sortKey === 'p2pReturn') return row.p2pReturn?.return_pct ?? null
   return row[sortKey] ?? null
 }
 

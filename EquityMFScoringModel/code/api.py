@@ -1,5 +1,6 @@
 """
-FastAPI service exposing the scored Equity mutual fund universe to the dashboard.
+FastAPI service exposing the scored mutual fund universe (Equity, Debt, Hybrid,
+Other and Solution-Oriented -- Regular plans only) to the dashboard.
 
     GET  /api/funds    the whole scored universe + the metadata to render it
     GET  /api/status   cache/scheduler health, for ops and manual curl checks
@@ -28,14 +29,23 @@ Run locally:
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from pydantic import BaseModel
 
+import nav_history
 import scheduler
 from cache_store import get_rows, get_status, load_cache_from_disk, refresh_cache
+from data_sources import historical_nav_base_url
 from score_intersection_funds_13param import PARAM_CATEGORY, PARAM_LABELS, RATING_BANDS, WEIGHTS
+
+# One HTTP call to the upstream Historical NAV endpoint per scheme -- past
+# this many schemes in one request, ask the caller to narrow their filters
+# first rather than let the batch balloon into thousands of live calls.
+MAX_POINT_TO_POINT_SCHEMES = 1500
 
 log = logging.getLogger(__name__)
 
@@ -60,9 +70,10 @@ async def lifespan(_app):
 
 
 app = FastAPI(
-    title="Equity MF Scoring API",
+    title="Mutual Fund Scoring API",
     version="1.0.0",
-    description="Daily-refreshed Equity mutual fund scores, built from the 13-parameter scoring matrix.",
+    description="Daily-refreshed mutual fund scores (all categories, Regular plans), "
+                 "built from the 14-parameter scoring matrix.",
     lifespan=lifespan,
 )
 
@@ -174,6 +185,55 @@ def post_refresh(x_refresh_token: str | None = Header(default=None)):
     return {**result, "next_refresh_at": scheduler.next_run_time()}
 
 
+class PointToPointRequest(BaseModel):
+    schcodes: list[int]
+    start_date: str  # YYYY-MM-DD
+    end_date: str     # YYYY-MM-DD
+
+
+@app.post("/api/returns/point-to-point")
+def post_point_to_point_returns(body: PointToPointRequest):
+    """On-demand date-wise return for a set of schemes -- NOT served from the
+    daily cache, since the date range is chosen live by the dashboard user.
+    One upstream HTTP call per scheme (see nav_history.py), fetched in
+    parallel; a scheme that fails or has no data in range comes back `null`
+    rather than failing the whole request.
+    """
+    if not historical_nav_base_url():
+        raise HTTPException(
+            status_code=503,
+            detail="point-to-point returns are not configured (HISTORICAL_NAV_URL unset)",
+        )
+    if not body.schcodes:
+        raise HTTPException(status_code=400, detail="schcodes must not be empty")
+    if len(body.schcodes) > MAX_POINT_TO_POINT_SCHEMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many schemes ({len(body.schcodes)}) -- narrow your filters to "
+                   f"{MAX_POINT_TO_POINT_SCHEMES} or fewer and try again",
+        )
+    try:
+        start = datetime.strptime(body.start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(body.end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date/end_date must be YYYY-MM-DD") from None
+    if start >= end:
+        raise HTTPException(status_code=400, detail="start_date must be before end_date")
+
+    by_schcode = {row["schcode"]: row for row in get_rows()}
+    wanted = []
+    results = {}
+    for schcode in body.schcodes:
+        row = by_schcode.get(schcode)
+        if row is None:
+            results[schcode] = None
+            continue
+        wanted.append((schcode, row.get("mf_cocode")))
+
+    results.update(nav_history.point_to_point_returns_bulk(wanted, start, end))
+    return {"returns": {str(schcode): value for schcode, value in results.items()}}
+
+
 @app.get("/api/health")
 def get_health():
     return {"status": "ok"}
@@ -182,6 +242,7 @@ def get_health():
 @app.get("/")
 def get_root():
     return {
-        "service": "Equity MF Scoring API",
-        "endpoints": ["/api/funds", "/api/status", "/api/refresh", "/api/health", "/docs"],
+        "service": "Mutual Fund Scoring API",
+        "endpoints": ["/api/funds", "/api/status", "/api/refresh", "/api/health",
+                      "/api/returns/point-to-point", "/docs"],
     }

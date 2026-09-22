@@ -147,3 +147,10 @@ export const LayersIcon = (props) => (
     <path d="m3 13 9 5 9-5" />
   </svg>
 )
+
+export const CalendarIcon = (props) => (
+  <svg {...base} {...props}>
+    <rect x="3" y="4" width="18" height="17" rx="2" />
+    <path d="M3 9h18M8 2v4m8-4v4" />
+  </svg>
+)

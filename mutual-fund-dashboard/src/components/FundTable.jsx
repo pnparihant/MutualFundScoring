@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 
 import { metricSummary } from '../lib/columns'
-import { DASH } from '../lib/format'
+import { DASH, formatPercent } from '../lib/format'
 import { FUND_INFO_GROUP } from '../lib/fundsView'
 import { ArrowDownIcon, ArrowUpIcon, ExpandIcon } from './icons'
 import {
@@ -29,6 +29,18 @@ import styles from './FundTable.module.css'
 
 const STAGGER_STEP_MS = 18
 const STAGGER_CAP_MS = 320
+
+const RETURN_GROUP = 'Point-to-Point Return'
+
+function ReturnCell({ value }) {
+  if (!value) return <span className={styles.numeric}>{DASH}</span>
+  return (
+    <span className={styles.numeric} title={`${value.start_date} → ${value.end_date}`}>
+      {value.return_pct > 0 ? '+' : ''}
+      {formatPercent(value.return_pct)}
+    </span>
+  )
+}
 
 const IDENTITY_COLUMNS = [
   {
@@ -119,7 +131,7 @@ function ParameterCell({ row, paramKey, viewMode }) {
   )
 }
 
-function buildColumns(paramColumns, viewMode, visibleGroups) {
+function buildColumns(paramColumns, viewMode, visibleGroups, returnColumnLabel) {
   const columns = IDENTITY_COLUMNS.filter(() => visibleGroups.includes(FUND_INFO_GROUP))
 
   const parameterColumns = paramColumns
@@ -134,7 +146,24 @@ function buildColumns(paramColumns, viewMode, visibleGroups) {
       render: (row) => <ParameterCell row={row} paramKey={column.key} viewMode={viewMode} />,
     }))
 
-  return [...columns, ...parameterColumns]
+  /* Not backend-driven like the parameter columns above -- an on-demand
+     column that only exists once the user has asked for a date range (see
+     Toolbar's point-to-point return control), so it isn't gated by
+     visibleGroups the way the scored parameter groups are. */
+  const returnColumn = returnColumnLabel
+    ? [
+        {
+          id: 'p2pReturn',
+          label: `Return (${returnColumnLabel})`,
+          group: RETURN_GROUP,
+          align: 'center',
+          title: 'Point-to-point return for the selected date range',
+          render: (row) => <ReturnCell value={row.p2pReturn} />,
+        },
+      ]
+    : []
+
+  return [...columns, ...parameterColumns, ...returnColumn]
 }
 
 function SortIndicator({ state }) {
@@ -224,13 +253,14 @@ export default function FundTable({
   onSort,
   selectedId,
   onSelect,
+  returnColumnLabel,
 }) {
   const scrollerRef = useRef(null)
   const [activeIndex, setActiveIndex] = useState(-1)
 
   const columns = useMemo(
-    () => buildColumns(paramColumns, viewMode, visibleGroups),
-    [paramColumns, viewMode, visibleGroups],
+    () => buildColumns(paramColumns, viewMode, visibleGroups, returnColumnLabel),
+    [paramColumns, viewMode, visibleGroups, returnColumnLabel],
   )
 
   /* Group header row: one cell per run of columns sharing a group. */

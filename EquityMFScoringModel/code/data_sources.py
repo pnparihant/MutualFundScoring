@@ -4,7 +4,9 @@ exact shape score_intersection_funds.load_json() produces -- {"data": [...]} --
 so build_intersection_universe() is indifferent to whether the rows arrived over
 the network or came out of the local snapshots in data/.
 
-This is the ONLY module in the backend that touches the live endpoints.
+This is the ONLY module in the backend that issues HTTP requests directly --
+nav_history.py's per-scheme historical-NAV calls reuse http_get()/_redact()
+from here rather than duplicating the retry/redaction logic.
 
 Configuration (EquityMFScoringModel/.env, gitignored):
 
@@ -50,6 +52,7 @@ log = logging.getLogger(__name__)
 
 SCHEME_MASTER_ENV = "SCHEME_MASTER"
 RISK_ENV = "RISK"
+HISTORICAL_NAV_ENV = "HISTORICAL_NAV_URL"
 
 MASTER_FIXTURE = "scheme_masters_1.json"
 RISK_FIXTURE = "risk.json"
@@ -58,7 +61,7 @@ RISK_FIXTURE = "risk.json"
 # turns an upstream rename into one clear error instead of a bare KeyError from
 # somewhere inside pandas.
 MASTER_REQUIRED = ("mf_schcode", "sch_name", "Category", "MainCategory", "FundManager",
-                   "BenchmarkName", "SchemeAUM", "ExitLoad", "3YEAR", "5YEAR")
+                   "BenchmarkName", "SchemeAUM", "ExitLoad", "3YEAR", "5YEAR", "InvestmentType1")
 RISK_REQUIRED = ("MF_SCHCODE", "ALPHA", "BETA", "SD", "SHARPE", "Sortino")
 
 # 3 attempts total: immediate, +2s, +6s
@@ -103,7 +106,7 @@ def _secret_fragments():
     (requests, for one, splits the host and the path across two clauses of the
     same message). Longest first, so the full URL is removed before its parts."""
     fragments = set()
-    for env_name in (SCHEME_MASTER_ENV, RISK_ENV):
+    for env_name in (SCHEME_MASTER_ENV, RISK_ENV, HISTORICAL_NAV_ENV):
         raw = (os.getenv(env_name) or "").strip().strip('"').strip("'")
         if not raw:
             continue
@@ -158,7 +161,7 @@ def _env_number(name, default, cast):
         return default
 
 
-def _parse_json(text):
+def parse_json(text):
     """Mirrors score_intersection_funds.load_json(): the local snapshots need the
     strict=False retry because the payload carries raw control characters, so a
     live response from the same system almost certainly does too."""
@@ -168,7 +171,7 @@ def _parse_json(text):
         return json.loads(text, strict=False)
 
 
-def _extract_rows(payload, label):
+def extract_rows(payload, label):
     """Pull the row array out of whatever envelope the response uses. The known
     shape is {"success":..., "data": [...], "message":...}; a bare top-level
     array and a few other common envelope keys are accepted too."""
@@ -229,7 +232,7 @@ def _silence_insecure_request_warning():
     warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 
-def _http_get(url, label):
+def http_get(url, label):
     timeout = _env_number("API_TIMEOUT_SECONDS", 60.0, float)
     verify = _env_bool("API_VERIFY_SSL", True)
     if not verify:
@@ -264,7 +267,7 @@ def _fetch(env_name, fixture_name, required_columns):
     if url:
         label = env_name
         log.info("%s: fetching live feed", label)
-        text = _http_get(url, label)
+        text = http_get(url, label)
     else:
         label = f"{env_name} (local fixture)"
         log.info("%s is unset -- reading local snapshot %s", env_name, fixture_name)
@@ -274,13 +277,13 @@ def _fetch(env_name, fixture_name, required_columns):
             raise DataSourceError(f"{label}: cannot read {fixture_name} ({type(exc).__name__})") from None
 
     try:
-        payload = _parse_json(text)
+        payload = parse_json(text)
     except json.JSONDecodeError as exc:
         raise DataSourceError(
             f"{label}: response is not valid JSON ({exc.msg} at line {exc.lineno} col {exc.colno})"
         ) from None
 
-    rows = _extract_rows(payload, label)
+    rows = extract_rows(payload, label)
     _validate(rows, required_columns, label)
     log.info("%s: %s rows received", label, len(rows))
     return {"data": rows}
@@ -304,3 +307,10 @@ def source_mode():
         "scheme_master": "live" if os.getenv(SCHEME_MASTER_ENV) else "fixture",
         "risk": "live" if os.getenv(RISK_ENV) else "fixture",
     }
+
+
+def historical_nav_base_url():
+    """The configured Historical NAV base URL, or None. There is no local-fixture
+    fallback for this one (no historical NAV series is stored in data/), so
+    callers must treat None as "feature unavailable", not "use the fixture"."""
+    return (os.getenv(HISTORICAL_NAV_ENV) or "").strip().strip('"').strip("'") or None

@@ -50,7 +50,7 @@ export default function SummaryCards({
       <div className={styles.card}>
         <span className={styles.label}>Categories</span>
         <span className={styles.value}>{summary.categoryCount}</span>
-        <span className={styles.hint}>equity sub-categories</span>
+        <span className={styles.hint}>fund sub-categories</span>
       </div>
 
       <div className={`${styles.card} ${styles.cardWide}`}>

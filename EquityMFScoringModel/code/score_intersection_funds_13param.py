@@ -1,12 +1,15 @@
 """
-Builds and scores the Equity mutual fund universe against 13 of Tanisha Mam's
-23 scoring-matrix parameters -- the original 9 that have real data in
-scheme_masters_1.json and risk.json, plus 4 more now fetchable from CMOTS'
+Builds and scores the Regular-plan mutual fund universe (Equity, Debt, Hybrid,
+Other and Solution-Oriented -- every MainCategory, not just Equity) against 14
+of Tanisha Mam's 23 scoring-matrix parameters -- the original 9 that have real
+data in scheme_masters_1.json and risk.json (with Rolling Returns split into
+its own 3Y and 5Y columns), plus 4 more now fetchable from CMOTS'
 per-scheme/per-AMC endpoints:
 
-    Rolling Returns (3Y/5Y)       (blended 3Y/5Y return, scored as excess vs.
-                                    the fund's category peer average -- there is
-                                    no benchmark-index return series in the data,
+    Rolling Returns (3Y), Rolling Returns (5Y)
+                                   (each scored as excess vs. the fund's
+                                    category peer average -- there is no
+                                    benchmark-index return series in the data,
                                     so category average stands in for "benchmark")
     Alpha (3Y)
     CAGR vs Category Avg (5Y)     (5Y return only, scored as excess vs. the same
@@ -19,8 +22,12 @@ per-scheme/per-AMC endpoints:
     Beta
     Exit Load Structure
     AUM Size (Category-adjusted)
-    Portfolio Concentration (Top 10 stocks %)   -- via TopHoldingMain, 100% coverage
-    Sector Diversification                      -- via MFSector, ~99% coverage
+    Portfolio Concentration (Top 10 stocks %)   -- via TopHoldingMain, built only for
+                                                    the original ~1,379-fund Equity
+                                                    universe -- OPTIONAL, not required
+                                                    (see build_intersection_universe)
+    Sector Diversification                      -- via MFSector, same Equity-only
+                                                    coverage and OPTIONAL as above
     Expense Ratio (vs Category Average)         -- via SummaryInfo (+ Direct-plan
                                                     backfill), ~90% coverage --
                                                     OPTIONAL, not required for a
@@ -70,6 +77,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -79,12 +87,15 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 
-# weights taken from the master scoring matrix for these 13 parameters,
+# weights taken from the master scoring matrix for these parameters,
 # renormalized (raw weights summed to 0.78) so they sum to 1.0. The first 9
-# raw weights are unchanged from the original model; the last 4 are the new
-# additions (0.04 + 0.04 + 0.05 + 0.05 = 0.18 more, so 0.60 -> 0.78 overall).
+# raw weights are unchanged from the original model (Rolling Returns' original
+# 0.10 is now split evenly across its two columns, rolling_returns_3y/5y); the
+# other 4 are the additions (0.04 + 0.04 + 0.05 + 0.05 = 0.18 more, so
+# 0.60 -> 0.78 overall).
 WEIGHTS = {
-    "rolling_returns_vs_benchmark": 0.10 / 0.78,
+    "rolling_returns_3y": 0.05 / 0.78,
+    "rolling_returns_5y": 0.05 / 0.78,
     "alpha_3y": 0.08 / 0.78,
     "cagr_vs_category_avg": 0.07 / 0.78,
     "sd_vs_category": 0.08 / 0.78,
@@ -100,7 +111,8 @@ WEIGHTS = {
 }
 
 PARAM_LABELS = {
-    "rolling_returns_vs_benchmark": "Rolling Returns (3Y/5Y)",
+    "rolling_returns_3y": "Rolling Returns (3Y)",
+    "rolling_returns_5y": "Rolling Returns (5Y)",
     "alpha_3y": "Alpha (3Y)",
     "cagr_vs_category_avg": "CAGR vs Category Avg (5Y)",
     "sd_vs_category": "Standard Deviation (vs Category)",
@@ -116,7 +128,8 @@ PARAM_LABELS = {
 }
 
 PARAM_CATEGORY = {
-    "rolling_returns_vs_benchmark": "Return",
+    "rolling_returns_3y": "Return",
+    "rolling_returns_5y": "Return",
     "alpha_3y": "Return",
     "cagr_vs_category_avg": "Return",
     "sd_vs_category": "Risk",
@@ -132,14 +145,18 @@ PARAM_CATEGORY = {
 }
 
 # Parameters required for a fund to enter the scored universe (the
-# "intersection"). Concentration/Sector/AMC Reputation are ~99-100% covered so
-# requiring them barely shrinks the universe; Expense Ratio is deliberately
-# left OUT of this list (~90% covered even after the Direct-plan backfill) so
-# a fund missing it still gets scored -- composite_and_rating() renormalizes
-# the remaining weights instead of dropping the fund.
+# "intersection"). AMC Reputation is ~100% covered (AMC-level, not per-scheme)
+# so requiring it barely shrinks the universe. Expense Ratio, Portfolio
+# Concentration and Sector Diversification are deliberately left OUT of this
+# list: Expense Ratio is ~90% covered even after the Direct-plan backfill, and
+# Portfolio Concentration / Sector Diversification (top10_concentration,
+# sector_count) come from CMOTS holdings/sector caches that were only ever
+# built for the original ~1,379-fund Equity universe -- requiring them would
+# silently exclude every Debt/Hybrid/Other/Solution-Oriented fund again. A
+# fund missing any of these three still gets scored -- composite_and_rating()
+# renormalizes the remaining weights instead of dropping the fund.
 REQUIRED_COLUMNS = ["ret_3y", "ret_5y", "alpha", "sd", "sharpe", "sortino", "beta",
-                    "exit_load_text", "aum", "top10_concentration", "sector_count",
-                    "amc_reputation_raw"]
+                    "exit_load_text", "aum", "amc_reputation_raw"]
 
 # composite-score interpretation, taken verbatim from the matrix's
 # "Rating Scale & Legend" sheet -> "TOTAL WEIGHTED SCORE -- INTERPRETATION"
@@ -261,7 +278,12 @@ def build_intersection_universe(master_payload, risk_payload):
     risk = risk.drop_duplicates("schcode").set_index("schcode")
 
     df = master.join(risk, how="left", rsuffix="_risk")
-    df = df[df["MainCategory"] == "Equity"].copy()
+    # Regular plans only -- "InDirect Plan" is the raw feed's literal spelling for
+    # Regular (as opposed to "Direct Plan"). No MainCategory filter: the universe
+    # spans Equity, Debt, Hybrid, Other and Solution-Oriented funds, all scored
+    # with the same matrix (see REQUIRED_COLUMNS and resolve_aum_bucket's fallback
+    # for how non-Equity funds degrade gracefully rather than being excluded).
+    df = df[df["InvestmentType1"] == "InDirect Plan"].copy()
 
     df["fund_name"] = df["sch_name"]
     df["category"] = df["Category"]
@@ -509,11 +531,9 @@ def score_amc_reputation(tier):
 
 def compute_category_stats(df):
     stats = {}
-    df = df.copy()
-    df["ret_blend"] = df[["ret_3y", "ret_5y"]].mean(axis=1)
     for cat, g in df.groupby("category"):
         stats[cat] = {
-            "ret_blend_mean": g["ret_blend"].mean(),
+            "ret_3y_mean": g["ret_3y"].mean(),
             "ret_5y_mean": g["ret_5y"].mean(),
             "sd_mean": g["sd"].mean(),
             "expense_ratio_mean": g["expense_ratio"].mean(),
@@ -525,15 +545,19 @@ def score_fund(row, cat_stats):
     cat = cat_stats.get(row["category"], {})
     scores = {}
 
-    blended_return = np.nanmean([row["ret_3y"], row["ret_5y"]])
-    cat_ret_blend_mean = cat.get("ret_blend_mean")
-    excess_return = None if cat_ret_blend_mean is None else blended_return - cat_ret_blend_mean
-    scores["rolling_returns_vs_benchmark"] = step_score(excess_return, ROLLING_RETURNS_BANDS)
-
-    scores["alpha_3y"] = step_score(row["alpha"], ALPHA_BANDS)
+    cat_ret_3y_mean = cat.get("ret_3y_mean")
+    excess_3y = None if cat_ret_3y_mean is None else row["ret_3y"] - cat_ret_3y_mean
+    scores["rolling_returns_3y"] = step_score(excess_3y, ROLLING_RETURNS_BANDS)
 
     cat_ret_5y_mean = cat.get("ret_5y_mean")
     excess_5y = None if cat_ret_5y_mean is None else row["ret_5y"] - cat_ret_5y_mean
+    scores["rolling_returns_5y"] = step_score(excess_5y, ROLLING_RETURNS_BANDS)
+
+    scores["alpha_3y"] = step_score(row["alpha"], ALPHA_BANDS)
+
+    # Same excess-vs-category-average input as rolling_returns_5y, scored
+    # against CAGR_BANDS instead of ROLLING_RETURNS_BANDS -- an intentional
+    # distinction carried over from the original model (see CAGR_BANDS above).
     scores["cagr_vs_category_avg"] = step_score(excess_5y, CAGR_BANDS)
 
     scores["sd_vs_category"] = score_sd_vs_category(row["sd"], cat.get("sd_mean"))
@@ -664,6 +688,13 @@ def write_grouped_xlsx(path, sheet_title, columns, rows_getter, n_rows):
     for r in range(n_rows):
         values = rows_getter(r)
         for c, value in enumerate(values, start=1):
+            # Free-text fields (exit load, etc.) can carry raw control
+            # characters straight from the upstream feed -- harmless in JSON,
+            # but openpyxl refuses to write them to a cell. Only surfaced once
+            # non-Equity categories (with their own free-text exit load
+            # wording) entered the universe.
+            if isinstance(value, str):
+                value = ILLEGAL_CHARACTERS_RE.sub("", value)
             ws.cell(row=r + 3, column=c, value=value)
 
     for i, (_, header) in enumerate(columns, start=1):

@@ -24,7 +24,7 @@ function friendlyMessage(error) {
   )
 }
 
-async function getJson(path, { signal } = {}) {
+async function request(path, { signal, method = 'GET', body } = {}) {
   const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
 
@@ -32,7 +32,11 @@ async function getJson(path, { signal } = {}) {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       signal: combined,
-      headers: { Accept: 'application/json' },
+      method,
+      headers: body
+        ? { Accept: 'application/json', 'Content-Type': 'application/json' }
+        : { Accept: 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
     })
   } catch (error) {
     // A caller-driven abort (unmount, superseded request) is not a real failure:
@@ -42,8 +46,16 @@ async function getJson(path, { signal } = {}) {
   }
 
   if (!response.ok) {
+    // The backend returns a JSON {"detail": "..."} on 4xx/5xx (FastAPI's
+    // convention) -- surface that instead of the generic status line when present.
+    let detail
+    try {
+      detail = (await response.json())?.detail
+    } catch {
+      /* not JSON -- fall through to the generic message below */
+    }
     throw new ApiError(
-      `The scoring API returned ${response.status} ${response.statusText}.`,
+      typeof detail === 'string' ? detail : `The scoring API returned ${response.status} ${response.statusText}.`,
       { status: response.status },
     )
   }
@@ -53,6 +65,14 @@ async function getJson(path, { signal } = {}) {
   } catch (error) {
     throw new ApiError('The scoring API returned a malformed response.', { cause: error })
   }
+}
+
+function getJson(path, options) {
+  return request(path, options)
+}
+
+function postJson(path, body, options) {
+  return request(path, { ...options, method: 'POST', body })
 }
 
 /**
@@ -67,4 +87,19 @@ export function getFunds(options) {
 /** Cache/scheduler health, without the row payload. */
 export function getStatus(options) {
   return getJson('/api/status', options)
+}
+
+/**
+ * On-demand date-wise return for a set of schemes -- NOT part of the daily
+ * cache, fetched live per scheme by the backend. `{ returns: { "<schcode>":
+ * { return_pct, start_date, end_date } | null, ... } }`; a scheme with no
+ * data in range (or a fetch failure) comes back null rather than failing the
+ * whole request.
+ */
+export function postPointToPointReturns({ schcodes, startDate, endDate }, options) {
+  return postJson(
+    '/api/returns/point-to-point',
+    { schcodes, start_date: startDate, end_date: endDate },
+    options,
+  )
 }

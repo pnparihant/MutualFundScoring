@@ -191,12 +191,19 @@ def _attach_metrics(df, rows):
     """Bolt each fund's raw metric values onto its score row as `metrics`,
     reusing the existing build_dataset_records() -- so the dashboard can show the
     actual Alpha/Sharpe/AUM/exit-load values beside their 1-5 scores without a
-    second endpoint or a second pass over the frame."""
+    second endpoint or a second pass over the frame.
+
+    Also stamps each row with its raw `mf_cocode` (not part of `metrics` --
+    it's an internal identifier, not something to display or export) so
+    /api/returns/point-to-point can resolve a scheme's AMC company code
+    straight from the cache instead of re-joining the source data."""
     by_code = {record["Scheme Code"]: record for record in build_dataset_records(df)}
+    mf_cocode_by_schcode = df["mf_cocode"].to_dict() if "mf_cocode" in df.columns else {}
     for row in rows:
         record = by_code.get(row["schcode"])
         if record is not None:
             row["metrics"] = {k: clean(v) for k, v in record.items() if k != "Scheme Code"}
+        row["mf_cocode"] = clean(mf_cocode_by_schcode.get(row["schcode"]))
     return rows
 
 
