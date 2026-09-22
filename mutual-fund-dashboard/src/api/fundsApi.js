@@ -96,10 +96,10 @@ export function getStatus(options) {
  * data in range (or a fetch failure) comes back null rather than failing the
  * whole request.
  */
-export function postPointToPointReturns({ schcodes, startDate, endDate }, options) {
+export function postPointToPointReturns({ schcodes, startDate, endDate, months }, options) {
   return postJson(
     '/api/returns/point-to-point',
-    { schcodes, start_date: startDate, end_date: endDate },
+    { schcodes, start_date: startDate, end_date: endDate, months: months ?? null },
     options,
   )
 }

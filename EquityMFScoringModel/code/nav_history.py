@@ -16,18 +16,27 @@ Leaving it unset disables the feature outright (see
 data_sources.historical_nav_base_url()) -- there is no local-fixture
 fallback, because no historical NAV series is stored anywhere in data/.
 
-UNVERIFIED against the live endpoint -- this environment has no network path
-to cmotsnew.arihantcapital.com, so the following are best guesses from the one
-sample URL given, not confirmed behaviour. Confirm with a real call before
-relying on this in production; _historical_nav_url() is the only place that
-needs to change if any guess is wrong:
-    - SDate/EDate date format (currently DD-MM-YYYY, see DATE_FORMAT)
+URL shape (confirmed from two real examples):
+    .../HistoricalNAV/{MF_COCODE}/{Period}/{PeriodCnt1}/{SDate}/{EDate}/{SchCode}
+    .../HistoricalNAV/1/M/1/-/-/5946    (1 month, scheme 5946)
+    .../HistoricalNAV/1/M/10/-/-/-      (10 months)
+
+Both confirmed examples vary Period/PeriodCnt1 and leave SDate/EDate as "-" --
+so that's what this module does too: a whole-months request sends
+Period="M", PeriodCnt1=<months>. SDate/EDate are never populated; no example
+of them actually being used has been seen, so building a request around them
+(as an earlier version of this module did) was unverified guesswork and is
+no longer how this works.
+
+STILL UNVERIFIED (no network path to cmotsnew.arihantcapital.com from this
+environment, so these remain best guesses until tested live):
+    - Period="D" for an arbitrary (non-whole-month) custom date range, sending
+      PeriodCnt1 as a day count -- inferred from the M=month code existing,
+      not from a confirmed example. If wrong, _period_for_range() is the one
+      place to fix.
     - whether the path's MF_COCODE segment must be the scheme's real AMC
       company code (currently sent as the scheme's own mf_cocode) or is a
-      free/ignored positional value
-    - Period/PeriodCnt1 behaviour when SDate/EDate are given explicitly
-      (currently sent as "-"/"-", mirroring the sample URL's own use of "-"
-      for the half of the pair it isn't using)
+      free/ignored positional value.
 """
 
 import logging
@@ -45,22 +54,25 @@ from data_sources import (
 
 log = logging.getLogger(__name__)
 
-DATE_FORMAT = "%d-%m-%Y"  # UNVERIFIED -- see module docstring
+
+def _period_for_range(months, start_date, end_date):
+    """(period_code, period_cnt) for the URL. Prefers the confirmed Period="M"
+    form when the request is a whole number of months (the dashboard's preset
+    buttons always are); falls back to a day count for an arbitrary custom
+    range -- see the module docstring's STILL UNVERIFIED note on that path."""
+    if months:
+        return "M", int(months)
+    days = (end_date - start_date).days
+    return "D", max(days, 1)
 
 
-def _format_date(value):
-    return value.strftime(DATE_FORMAT)
-
-
-def _historical_nav_url(mf_cocode, schcode, start_date, end_date):
+def _historical_nav_url(mf_cocode, schcode, months, start_date, end_date):
     base = historical_nav_base_url()
     if not base:
         raise DataSourceError("HISTORICAL_NAV_URL is not configured")
     cocode = int(mf_cocode) if mf_cocode not in (None, "") else "-"
-    return (
-        f"{base.rstrip('/')}/{cocode}/-/-/"
-        f"{_format_date(start_date)}/{_format_date(end_date)}/{int(schcode)}"
-    )
+    period, period_cnt = _period_for_range(months, start_date, end_date)
+    return f"{base.rstrip('/')}/{cocode}/{period}/{period_cnt}/-/-/{int(schcode)}"
 
 
 def _row_date(row):
@@ -73,15 +85,17 @@ def _row_date(row):
         return None
 
 
-def fetch_scheme_nav_history(schcode, mf_cocode, start_date, end_date):
-    """The raw NAV rows for one scheme between start_date and end_date
-    (inclusive), sorted oldest first. Each row is the upstream's own dict --
-    at least NAVDATE and NAVRS/ADJNAVRS are expected.
+def fetch_scheme_nav_history(schcode, mf_cocode, months, start_date, end_date):
+    """The raw NAV rows for one scheme covering the requested window, sorted
+    oldest first. `months` takes priority (Period="M") when given; otherwise
+    the window is derived from start_date/end_date as a day count (see
+    _period_for_range). Each row is the upstream's own dict -- at least
+    NAVDATE and NAVRS/ADJNAVRS are expected.
 
     Raises DataSourceError on a configuration problem or an HTTP failure --
     callers doing a bulk fetch must catch that per-scheme so one bad scheme
     can't sink the whole batch (see point_to_point_returns_bulk)."""
-    url = _historical_nav_url(mf_cocode, schcode, start_date, end_date)
+    url = _historical_nav_url(mf_cocode, schcode, months, start_date, end_date)
     label = f"HistoricalNAV(schcode={schcode})"
     text = http_get(url, label)
     payload = parse_json(text)
@@ -122,9 +136,9 @@ def point_to_point_return(nav_rows):
     }
 
 
-def _one(schcode, mf_cocode, start_date, end_date):
+def _one(schcode, mf_cocode, months, start_date, end_date):
     try:
-        rows = fetch_scheme_nav_history(schcode, mf_cocode, start_date, end_date)
+        rows = fetch_scheme_nav_history(schcode, mf_cocode, months, start_date, end_date)
     except Exception as exc:  # noqa: BLE001 -- one scheme's failure must not sink the batch
         log.warning("point-to-point return failed for schcode=%s: %s",
                      schcode, _redact(f"{type(exc).__name__}: {exc}"))
@@ -132,18 +146,21 @@ def _one(schcode, mf_cocode, start_date, end_date):
     return point_to_point_return(rows)
 
 
-def point_to_point_returns_bulk(funds, start_date, end_date, max_workers=12):
-    """funds: iterable of (schcode, mf_cocode) pairs. Returns
-    {schcode: point_to_point_return()'s dict, or None}. Fetched in parallel
-    (one HTTP call per scheme, bounded by max_workers) since the dashboard may
-    ask for the currently filtered set, which could be hundreds of funds."""
+def point_to_point_returns_bulk(funds, months, start_date, end_date, max_workers=12):
+    """funds: iterable of (schcode, mf_cocode) pairs. `months` is the whole
+    number of months for a preset request (Period="M"), or None for a custom
+    start_date/end_date range (falls back to a day count, Period="D" -- see
+    the module docstring). Returns {schcode: point_to_point_return()'s dict,
+    or None}. Fetched in parallel (one HTTP call per scheme, bounded by
+    max_workers) since the dashboard may ask for the currently filtered set,
+    which could be hundreds of funds."""
     funds = list(funds)
     if not funds:
         return {}
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_to_schcode = {
-            pool.submit(_one, schcode, mf_cocode, start_date, end_date): schcode
+            pool.submit(_one, schcode, mf_cocode, months, start_date, end_date): schcode
             for schcode, mf_cocode in funds
         }
         for future in as_completed(future_to_schcode):

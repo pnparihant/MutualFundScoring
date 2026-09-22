@@ -187,8 +187,13 @@ def post_refresh(x_refresh_token: str | None = Header(default=None)):
 
 class PointToPointRequest(BaseModel):
     schcodes: list[int]
-    start_date: str  # YYYY-MM-DD
+    start_date: str  # YYYY-MM-DD -- always required, for labelling/validation
     end_date: str     # YYYY-MM-DD
+    # Whole number of months for a preset (Toolbar's 1M/2M/3M/6M/1Y buttons).
+    # Takes priority over start_date/end_date for the actual upstream call --
+    # see nav_history.py's module docstring for why (the only two confirmed
+    # example URLs both use Period="M"+PeriodCnt1, never explicit dates).
+    months: int | None = None
 
 
 @app.post("/api/returns/point-to-point")
@@ -230,7 +235,7 @@ def post_point_to_point_returns(body: PointToPointRequest):
             continue
         wanted.append((schcode, row.get("mf_cocode")))
 
-    results.update(nav_history.point_to_point_returns_bulk(wanted, start, end))
+    results.update(nav_history.point_to_point_returns_bulk(wanted, body.months, start, end))
     return {"returns": {str(schcode): value for schcode, value in results.items()}}
 
 

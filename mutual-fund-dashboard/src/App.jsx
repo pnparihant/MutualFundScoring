@@ -222,6 +222,7 @@ export default function App() {
           schcodes,
           startDate: range.startDate,
           endDate: range.endDate,
+          months: range.months,
         })
         setP2pReturns(returns)
       } catch (err) {
