@@ -24,14 +24,16 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
-ENV TZ=Asia/Kolkata
-RUN apk add --no-cache tzdata curl \
- && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# No `apk add tzdata` -- this container only serves static files (no app-level
+# code cares what timezone it thinks it's in, unlike the API's scheduler), so
+# it's not worth an Alpine package mirror needing to be reachable at build
+# time just for log-timestamp cosmetics.
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /build/dist /usr/share/nginx/html
 
 EXPOSE 80
 
+# wget ships with Alpine's busybox base -- no extra `apk add curl` needed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1/ >/dev/null || exit 1
+  CMD wget -q --spider http://127.0.0.1/ || exit 1

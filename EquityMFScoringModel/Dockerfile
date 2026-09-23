@@ -8,18 +8,15 @@
 
 FROM python:3.13-slim
 
-# Asia/Kolkata is mandatory: the daily refresh is a cron trigger at 06:30 IST,
-# and tzdata is not present in the slim image. Without it the scheduler falls
-# back to its default zone and the refresh lands at the wrong wall-clock time.
+# Asia/Kolkata is mandatory: the daily refresh is a cron trigger at 06:30 IST.
+# scheduler.py resolves it via Python's zoneinfo, which reads the `tzdata`
+# PyPI package (see requirements.txt) as a fallback when the OS has no
+# zoneinfo database -- deliberately no `apt-get install tzdata`, so the build
+# doesn't need a Debian package mirror reachable at all.
 ENV TZ=Asia/Kolkata \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends tzdata curl \
- && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
- && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -43,9 +40,11 @@ EXPOSE 8000
 
 # /api/health is served from memory and answers immediately, so it stays green
 # while the first fetch-and-score runs in the background. start-period covers
-# interpreter start and the disk-cache load, not the refresh.
+# interpreter start and the disk-cache load, not the refresh. Uses Python's
+# own urllib rather than curl -- Python is already here, curl would need
+# another apt-get install.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
 
 # Single worker deliberately: the cache is per-process in-memory state and the
 # scheduler must not run in more than one process, or the daily refresh would

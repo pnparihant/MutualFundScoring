@@ -5,6 +5,10 @@ requests>=2.32
 python-dotenv>=1.0
 # 4.x is a ground-up rewrite with a different API and still pre-release
 apscheduler>=3.10,<4
+# The slim base image has no OS-level timezone database -- zoneinfo falls
+# back to this automatically (see scheduler.py), so Asia/Kolkata resolves
+# without an apt-get install at build time.
+tzdata>=2024.1
 
 # scoring model (already present in .venv)
 pandas>=2.2
