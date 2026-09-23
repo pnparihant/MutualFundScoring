@@ -1,11 +1,20 @@
 # Equity Mutual Fund Scoring -- UAT deployment.
 #
 #   cp .env.example .env     # then fill it in, see Section 3.8
-#   docker compose up -d --build
+#   ./deploy.sh
 #
 # Two containers, no database server. The API holds its scored universe in
 # memory and mirrors it to a persistent volume; the dashboard is static files
 # served by nginx.
+#
+# Redeploying: use ./deploy.sh, not `docker compose down && ... up -d --build`.
+# `down` stops and removes both containers immediately, before the new image
+# even starts building -- so if the rebuild then fails (e.g. it can't reach a
+# package mirror), nothing is left running at all. Compose's own `build` step
+# never touches a running container, and `up -d` only replaces a service's
+# container once its new image already exists -- deploy.sh relies on exactly
+# that ordering, and also waits for the new container's healthcheck before
+# calling the deploy done.
 
 services:
   api:

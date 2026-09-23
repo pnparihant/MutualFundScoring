@@ -1,0 +1,5 @@
+# Shell scripts run on Linux -- force LF regardless of the committing
+# machine's core.autocrlf, so a Windows checkout can't hand the UAT server a
+# script starting with a CRLF shebang line ("bad interpreter: ... : no such
+# file or directory").
+*.sh text eol=lf
