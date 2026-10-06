@@ -70,9 +70,13 @@ def _historical_nav_url(mf_cocode, schcode, months, start_date, end_date):
     base = historical_nav_base_url()
     if not base:
         raise DataSourceError("HISTORICAL_NAV_URL is not configured")
-    cocode = int(mf_cocode) if mf_cocode not in (None, "") else "-"
+
     period, period_cnt = _period_for_range(months, start_date, end_date)
-    return f"{base.rstrip('/')}/{cocode}/{period}/{period_cnt}/-/-/{int(schcode)}"
+
+    return (
+        f"{base.rstrip('/')}/1/"
+        f"{period}/{period_cnt}/-/-/{int(schcode)}"
+    )
 
 
 def _row_date(row):
