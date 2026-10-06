@@ -38,6 +38,7 @@ export default function Toolbar({
   isCompact,
   returnRange,
   returnsLoading,
+  returnsProgress,
   returnsError,
   onApplyReturnRange,
   onClearReturnRange,
@@ -230,7 +231,11 @@ export default function Toolbar({
             onClick={handleCustomApply}
             disabled={!customValid || returnsLoading}
           >
-            {returnsLoading ? 'Loading…' : 'Show returns'}
+            {returnsLoading
+              ? returnsProgress
+                ? `Loading ${returnsProgress.done}/${returnsProgress.total}…`
+                : 'Loading…'
+              : 'Show returns'}
           </button>
           {returnRange ? (
             <button type="button" className={styles.buttonGhost} onClick={onClearReturnRange}>

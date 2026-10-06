@@ -42,10 +42,12 @@ from cache_store import get_rows, get_status, load_cache_from_disk, refresh_cach
 from data_sources import historical_nav_base_url
 from score_intersection_funds_13param import PARAM_CATEGORY, PARAM_LABELS, RATING_BANDS, WEIGHTS
 
-# One HTTP call to the upstream Historical NAV endpoint per scheme -- past
-# this many schemes in one request, ask the caller to narrow their filters
-# first rather than let the batch balloon into thousands of live calls.
-MAX_POINT_TO_POINT_SCHEMES = 1500
+# One HTTP call to the upstream Historical NAV endpoint per scheme, and that
+# endpoint only manages ~5 schemes/s however much parallelism is thrown at it.
+# The dashboard therefore sends the filtered set in small chunks and fills the
+# column in as each returns; this is just the guard against one request
+# holding a worker for minutes.
+MAX_POINT_TO_POINT_SCHEMES = 200
 
 log = logging.getLogger(__name__)
 
@@ -214,8 +216,8 @@ def post_point_to_point_returns(body: PointToPointRequest):
     if len(body.schcodes) > MAX_POINT_TO_POINT_SCHEMES:
         raise HTTPException(
             status_code=400,
-            detail=f"too many schemes ({len(body.schcodes)}) -- narrow your filters to "
-                   f"{MAX_POINT_TO_POINT_SCHEMES} or fewer and try again",
+            detail=f"too many schemes in one request ({len(body.schcodes)}) -- send at most "
+                   f"{MAX_POINT_TO_POINT_SCHEMES} per request",
         )
     try:
         start = datetime.strptime(body.start_date, "%Y-%m-%d").date()

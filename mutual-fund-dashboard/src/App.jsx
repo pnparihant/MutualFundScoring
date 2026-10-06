@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { postPointToPointReturns } from './api/fundsApi'
 import AppHeader from './components/AppHeader'
@@ -27,6 +27,12 @@ import {
 import styles from './App.module.css'
 
 const DEFAULT_SORT = { key: 'composite', direction: 'desc' }
+
+/* Point-to-point returns are fetched in chunks (see handleApplyReturnRange).
+   40 schemes is ~8s at the upstream's pace, comfortably inside the timeout. */
+const RETURN_CHUNK_SIZE = 40
+const RETURN_CHUNK_TIMEOUT_MS = 90_000
+const MAX_RETURN_SCHEMES = 1500
 
 /**
  * One-click filter combinations. Each declares the complete filter state it
@@ -94,7 +100,9 @@ export default function App() {
   const [returnRange, setReturnRange] = useState(null)
   const [p2pReturns, setP2pReturns] = useState(null)
   const [returnsLoading, setReturnsLoading] = useState(false)
+  const [returnsProgress, setReturnsProgress] = useState(null)
   const [returnsError, setReturnsError] = useState(null)
+  const returnsRunRef = useRef(0)
 
   const debouncedQuery = useDebouncedValue(query, 200)
 
@@ -209,36 +217,66 @@ export default function App() {
   }, [])
 
   /* Fetched against the currently filtered (not yet paginated/sorted-by-return)
-     set -- a live bulk network call, one HTTP request per scheme on the
-     backend, so it only runs when the user explicitly asks for a range. */
+     set. The backend makes one upstream call per scheme and that upstream only
+     manages ~5 schemes/s, so a whole category takes tens of seconds -- far past
+     a single request's timeout. The set is therefore sent in small chunks, and
+     the column fills in as each one lands. returnsRunRef identifies the current
+     run: starting another range, or clearing, bumps it, and a superseded run
+     drops out at its next await instead of overwriting newer results. */
   const handleApplyReturnRange = useCallback(
     async (range) => {
-      setReturnRange(range)
-      setReturnsLoading(true)
+      const runId = ++returnsRunRef.current
+      const schcodes = filtered.map((row) => row.schcode)
+
       setReturnsError(null)
-      try {
-        const schcodes = filtered.map((row) => row.schcode)
-        const { returns } = await postPointToPointReturns({
-          schcodes,
-          startDate: range.startDate,
-          endDate: range.endDate,
-          months: range.months,
-        })
-        setP2pReturns(returns)
-      } catch (err) {
-        setReturnsError(err.message || 'Failed to load returns')
+      if (schcodes.length > MAX_RETURN_SCHEMES) {
+        setReturnRange(null)
         setP2pReturns(null)
-      } finally {
         setReturnsLoading(false)
+        setReturnsProgress(null)
+        setReturnsError(
+          `too many schemes (${schcodes.length}) – narrow your filters to ${MAX_RETURN_SCHEMES} or fewer and try again`,
+        )
+        return
+      }
+
+      setReturnRange(range)
+      setP2pReturns({})
+      setReturnsLoading(true)
+      setReturnsProgress({ done: 0, total: schcodes.length })
+
+      try {
+        for (let start = 0; start < schcodes.length; start += RETURN_CHUNK_SIZE) {
+          const chunk = schcodes.slice(start, start + RETURN_CHUNK_SIZE)
+          const { returns } = await postPointToPointReturns(
+            { schcodes: chunk, startDate: range.startDate, endDate: range.endDate, months: range.months },
+            { timeoutMs: RETURN_CHUNK_TIMEOUT_MS },
+          )
+          if (returnsRunRef.current !== runId) return
+          setP2pReturns((current) => ({ ...current, ...returns }))
+          setReturnsProgress({ done: start + chunk.length, total: schcodes.length })
+        }
+      } catch (err) {
+        if (returnsRunRef.current === runId) {
+          setReturnsError(err.message || 'Failed to load returns')
+        }
+      } finally {
+        if (returnsRunRef.current === runId) {
+          setReturnsLoading(false)
+          setReturnsProgress(null)
+        }
       }
     },
     [filtered],
   )
 
   const handleClearReturnRange = useCallback(() => {
+    returnsRunRef.current += 1
     setReturnRange(null)
     setP2pReturns(null)
     setReturnsError(null)
+    setReturnsLoading(false)
+    setReturnsProgress(null)
   }, [])
 
   const handleReset = useCallback(() => {
@@ -367,6 +405,7 @@ export default function App() {
             isCompact={isCompact}
             returnRange={returnRange}
             returnsLoading={returnsLoading}
+            returnsProgress={returnsProgress}
             returnsError={returnsError}
             onApplyReturnRange={handleApplyReturnRange}
             onClearReturnRange={handleClearReturnRange}

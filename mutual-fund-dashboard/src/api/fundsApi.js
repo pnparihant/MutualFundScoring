@@ -24,8 +24,8 @@ function friendlyMessage(error) {
   )
 }
 
-async function request(path, { signal, method = 'GET', body } = {}) {
-  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+async function request(path, { signal, method = 'GET', body, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
   const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
 
   let response
