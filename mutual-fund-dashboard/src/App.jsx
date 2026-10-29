@@ -147,6 +147,14 @@ export default function App() {
       .map((rating) => ({ rating, count: counts.get(rating), tone: RATING_TONES[rating] }))
   }, [sorted])
 
+  /* Funds admitted without a 3Y/5Y track record (see LIMITED_HISTORY_CATEGORIES
+     in the scoring module) -- named in the footer so their scores aren't read
+     as comparable to the fully-scored funds. */
+  const limitedHistory = useMemo(() => {
+    const limited = funds.filter((row) => row.limited_history)
+    return { count: limited.length, categories: distinctValues(limited, 'category') }
+  }, [funds])
+
   const visibleGroups = useMemo(
     () => [FUND_INFO_GROUP, ...groups].filter((group) => !hiddenGroups.includes(group)),
     [groups, hiddenGroups],
@@ -470,6 +478,15 @@ export default function App() {
             the weighted mean of the parameters that could be scored; ratings follow the matrix’s own
             bands.
           </p>
+          {limitedHistory.count > 0 ? (
+            <p className={styles.footerNote}>
+              Note: {limitedHistory.count} funds in {limitedHistory.categories.join(', ')} are too new to
+              have 3-year or 5-year returns. They are scored only on the parameters available (risk
+              metrics, exit load, AUM and AMC), so their composite scores rest on less data and are
+              not directly comparable with the other funds. See the Data completeness column for how much
+              of each score is based on data.
+            </p>
+          ) : null}
           <p className={styles.footerNote}>
             Data refreshes automatically once a day. This page re-checks when you return to the tab,
             and only when a new refresh is actually due.

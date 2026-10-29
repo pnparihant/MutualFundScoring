@@ -158,6 +158,22 @@ PARAM_CATEGORY = {
 REQUIRED_COLUMNS = ["ret_3y", "ret_5y", "alpha", "sd", "sharpe", "sortino", "beta",
                     "exit_load_text", "aum", "amc_reputation_raw"]
 
+# These sub-categories are made up of funds that are too new to have a 3Y/5Y
+# return (Life Cycle and Sectoral Debt funds have none at all; Balanced Hybrid
+# and the passive "Other Scheme - Index Fund" have no 5Y), so requiring
+# REQUIRED_COLUMNS would leave the whole sub-category out of the dashboard. A
+# fund in one of them is admitted on the risk metrics alone and scored on
+# whatever parameters it has -- composite_and_rating() renormalizes, and the row
+# is flagged `limited_history` so the dashboard can say so. Every other
+# category keeps the full requirement.
+LIMITED_HISTORY_CATEGORIES = {
+    "Sectoral Debt Fund",
+    "Balanced Hybrid Fund",
+    "Life Cycle Fund",
+    "Other Scheme - Index Fund",
+}
+LIMITED_HISTORY_REQUIRED_COLUMNS = [c for c in REQUIRED_COLUMNS if c not in ("ret_3y", "ret_5y")]
+
 # composite-score interpretation, taken verbatim from the matrix's
 # "Rating Scale & Legend" sheet -> "TOTAL WEIGHTED SCORE -- INTERPRETATION"
 RATING_BANDS = [
@@ -189,6 +205,55 @@ AUM_CATEGORY_BANDS = {
 # Value, Dividend Yield, Contra) fall back to Flexi-Cap's bands as the
 # closest generic diversified-equity proxy -- an assumption, not from the file.
 AUM_CATEGORY_FALLBACK = "Flexi-Cap"
+
+
+# The feed's "Category" labels -> the SEBI sub-category names. The feed spells
+# several of them differently (and has renamed some over time -- the local
+# snapshot still carries the older spellings, so both are listed): e.g. SEBI's
+# "Low Duration Fund" arrives as "Ultra Short to Short Term Fund". Every entry
+# is a pure rename of one feed label to one SEBI name, except Life Cycle, where
+# the feed splits SEBI's single sub-category by maturity. Labels not listed here
+# (Index Fund, ETFs Fund, Fixed Maturity Plans, ...) pass through unchanged.
+SEBI_CATEGORY_NAMES = {
+    # Debt
+    "Ultra Short Term Fund": "Ultra Short Duration Fund",
+    "Ultra Short to Short Term Fund": "Low Duration Fund",
+    "Short Term Fund": "Short Duration Fund",
+    "Medium Term Fund": "Medium Duration Fund",
+    "Medium to Long Term Fund": "Medium to Long Duration Fund",
+    "Long Term Fund": "Long Duration Fund",
+    "Dynamic Term Fund": "Dynamic Bond Fund",
+    "Dynamic Bond": "Dynamic Bond Fund",
+    "Banking and PSU Debt Fund": "Banking & PSU Fund",
+    "Banking and PSU Fund": "Banking & PSU Fund",
+    "10 year Constant Maturity Gilt Fund": "Gilt Fund with 10-year Constant Duration",
+    "Gilt Fund with 10 year Constant duration": "Gilt Fund with 10-year Constant Duration",
+    "Floating Interest Rates Fund": "Floater Fund",
+    "Sectoral Fund (Debt)": "Sectoral Debt Fund",
+    # Equity
+    "ELSS - Tax Saver Fund": "ELSS (Tax Saver) Fund",
+    "ELSS": "ELSS (Tax Saver) Fund",
+    # Hybrid
+    "Dynamic Asset Allocation Fund or Balanced Advantage Fund": "Balanced Advantage / Dynamic Asset Allocation Fund",
+    "Dynamic Asset Allocation or Balanced Advantage": "Balanced Advantage / Dynamic Asset Allocation Fund",
+    "Equity Savings": "Equity Savings Fund",
+    "Multi Asset Allocation": "Multi Asset Allocation Fund",
+    # Life Cycle
+    "Life Cycle Funds": "Life Cycle Fund",
+    "Life Cycle Funds with maturity of 5 years": "Life Cycle Fund",
+    "Life Cycle Funds with maturity of 10 years": "Life Cycle Fund",
+    "Life Cycle Funds with maturity of 15 years": "Life Cycle Fund",
+    "Life Cycle Funds with maturity of 30 years": "Life Cycle Fund",
+}
+
+
+def sebi_category(label):
+    """The SEBI sub-category name for a feed "Category" label; a label with no
+    mapping (or a missing one) is returned as it came."""
+    if not isinstance(label, str):
+        return label
+    label = label.strip()
+    return SEBI_CATEGORY_NAMES.get(label, label)
 
 
 def resolve_aum_bucket(category):
@@ -286,7 +351,7 @@ def build_intersection_universe(master_payload, risk_payload):
     df = df[df["InvestmentType1"] == "InDirect Plan"].copy()
 
     df["fund_name"] = df["sch_name"]
-    df["category"] = df["Category"]
+    df["category"] = df["Category"].map(sebi_category)
     df["fund_manager"] = df["FundManager"]
     df["benchmark_name"] = df["BenchmarkName"]
     df["ret_3y"] = df["3YEAR"]
@@ -298,11 +363,19 @@ def build_intersection_universe(master_payload, risk_payload):
 
     _attach_extra_params(df)
 
-    mask = pd.Series(True, index=df.index)
+    full = pd.Series(True, index=df.index)
     for col in REQUIRED_COLUMNS:
-        mask &= df[col].notna()
+        full &= df[col].notna()
 
-    return df[mask].copy()
+    # Categories whose funds are too new for a 3Y/5Y track record only need the
+    # risk metrics, exit load, AUM and AMC tier -- see LIMITED_HISTORY_CATEGORIES.
+    relaxed = pd.Series(True, index=df.index)
+    for col in LIMITED_HISTORY_REQUIRED_COLUMNS:
+        relaxed &= df[col].notna()
+    relaxed &= df["category"].isin(LIMITED_HISTORY_CATEGORIES)
+
+    df["limited_history"] = relaxed & ~full
+    return df[full | relaxed].copy()
 
 
 def _attach_extra_params(df):
@@ -620,6 +693,7 @@ def build_score_rows(df, top_n=None):
             "data_completeness": completeness,
             "rating": rating,
             "recommendation": rec,
+            "limited_history": bool(row.get("limited_history", False)),
             "category_scores": category_rollup(param_scores),
             "parameter_scores": {k: (round(v, 2) if v is not None else None) for k, v in param_scores.items()},
         })
