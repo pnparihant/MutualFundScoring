@@ -480,8 +480,8 @@ export default function App() {
           </p>
           {limitedHistory.count > 0 ? (
             <p className={styles.footerNote}>
-              Note: {limitedHistory.count} funds in {limitedHistory.categories.join(', ')} are too new to
-              have 3-year or 5-year returns. They are scored only on the parameters available (risk
+              Note: {limitedHistory.count} funds in {limitedHistory.categories.join(', ')} have limited
+              history (under a year, or too new for 3-year or 5-year returns). They are scored only on the parameters available (risk
               metrics, exit load, AUM and AMC), so their composite scores rest on less data and are
               not directly comparable with the other funds. See the Data completeness column for how much
               of each score is based on data.

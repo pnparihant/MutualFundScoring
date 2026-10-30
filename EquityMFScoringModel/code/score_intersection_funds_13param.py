@@ -155,8 +155,27 @@ PARAM_CATEGORY = {
 # silently exclude every Debt/Hybrid/Other/Solution-Oriented fund again. A
 # fund missing any of these three still gets scored -- composite_and_rating()
 # renormalizes the remaining weights instead of dropping the fund.
-REQUIRED_COLUMNS = ["ret_3y", "ret_5y", "alpha", "sd", "sharpe", "sortino", "beta",
+REQUIRED_COLUMNS = ["scheme_return", "alpha", "sd", "sharpe", "sortino", "beta",
                     "exit_load_text", "aum", "amc_reputation_raw"]
+
+# Scheme Return -- the single return figure every fund is scored on:
+#   3Y and 5Y CAGR both available -> 40% 3Y + 60% 5Y (5Y weighted higher since
+#                                    it smooths out short-term cycles)
+#   otherwise, the longest track record the fund has: 4Y CAGR (if the feed
+#     carries one), else 3Y CAGR, else since-inception CAGR
+#   fund younger than 1 year      -> no return; the record is flagged
+#                                    `limited_history`
+# A fund younger than 5 years cannot have a 5Y CAGR, so the blend is only ever
+# reachable for funds that have both -- everything else takes the fallback.
+RETURN_WEIGHT_3Y = 0.4
+RETURN_WEIGHT_5Y = 0.6
+MIN_HISTORY_YEARS = 1.0
+DAYS_PER_YEAR = 365.25
+
+BASIS_BLEND = "3Y/5Y blend"
+BASIS_4Y = "4Y CAGR"
+BASIS_3Y = "3Y CAGR"
+BASIS_INCEPTION = "Since inception"
 
 # These sub-categories are made up of funds that are too new to have a 3Y/5Y
 # return (Life Cycle and Sectoral Debt funds have none at all; Balanced Hybrid
@@ -172,7 +191,7 @@ LIMITED_HISTORY_CATEGORIES = {
     "Life Cycle Fund",
     "Other Scheme - Index Fund",
 }
-LIMITED_HISTORY_REQUIRED_COLUMNS = [c for c in REQUIRED_COLUMNS if c not in ("ret_3y", "ret_5y")]
+LIMITED_HISTORY_REQUIRED_COLUMNS = [c for c in REQUIRED_COLUMNS if c != "scheme_return"]
 
 # composite-score interpretation, taken verbatim from the matrix's
 # "Rating Scale & Legend" sheet -> "TOTAL WEIGHTED SCORE -- INTERPRETATION"
@@ -297,6 +316,9 @@ DATASET_COLUMNS = [
     ("Fund Info", "Benchmark Name", "benchmark_name"),
     ("Return", "Rolling Returns 3Y (%)", "ret_3y"),
     ("Return", "Rolling Returns 5Y (%)", "ret_5y"),
+    ("Return", "Scheme Return (%)", "scheme_return"),
+    ("Return", "Scheme Return Basis", "return_basis"),
+    ("Return", "Fund Age (Yrs)", "fund_age_years"),
     ("Return", "Alpha (3Y)", "alpha"),
     ("Return", "CAGR vs Category Avg 5Y (%)", "ret_5y"),
     ("Risk", "Standard Deviation (vs Category)", "sd"),
@@ -329,6 +351,46 @@ def schcode(value):
     return None if value is None else int(round(float(value)))
 
 
+def _num(value):
+    """float(value), or None for a missing / non-numeric feed value."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(number) else number
+
+
+def compute_scheme_return(row):
+    """(scheme_return, basis, fund_age_years) for one scheme -- see the Scheme
+    Return note above REQUIRED_COLUMNS. Age runs from LaunchDate to the feed's
+    NAV date. scheme_return/basis are None for a fund younger than a year (or
+    with no usable launch date and no return at all)."""
+    launch = pd.to_datetime(row.get("LaunchDate"), errors="coerce")
+    as_of = pd.to_datetime(row.get("navdate"), errors="coerce")
+    if pd.isna(as_of):
+        as_of = pd.Timestamp.today().normalize()
+    age = None if pd.isna(launch) else round((as_of - launch).days / DAYS_PER_YEAR, 2)
+
+    if age is not None and age < MIN_HISTORY_YEARS:
+        return None, None, age
+
+    r3, r5 = _num(row.get("3YEAR")), _num(row.get("5YEAR"))
+    if r3 is not None and r5 is not None:
+        return RETURN_WEIGHT_3Y * r3 + RETURN_WEIGHT_5Y * r5, BASIS_BLEND, age
+
+    r4 = _num(row.get("4YEAR"))
+    if r4 is not None:
+        return r4, BASIS_4Y, age
+    if r3 is not None:
+        return r3, BASIS_3Y, age
+    since_inception = _num(row.get("inception"))
+    if since_inception is not None:
+        return since_inception, BASIS_INCEPTION, age
+    return None, None, age
+
+
 def build_intersection_universe(master_payload, risk_payload):
     """master_payload / risk_payload are already-fetched {"data": [...]} dicts --
     the shape load_json() returns for the local snapshots and the shape
@@ -356,6 +418,8 @@ def build_intersection_universe(master_payload, risk_payload):
     df["benchmark_name"] = df["BenchmarkName"]
     df["ret_3y"] = df["3YEAR"]
     df["ret_5y"] = df["5YEAR"]
+    computed = df.apply(compute_scheme_return, axis=1, result_type="expand")
+    df["scheme_return"], df["return_basis"], df["fund_age_years"] = computed[0], computed[1], computed[2]
     df["aum"] = df["SchemeAUM"]
     df["exit_load_text"] = df["ExitLoad"]
     for col in ["ALPHA", "BETA", "SD", "SHARPE", "Sortino"]:
@@ -367,14 +431,16 @@ def build_intersection_universe(master_payload, risk_payload):
     for col in REQUIRED_COLUMNS:
         full &= df[col].notna()
 
-    # Categories whose funds are too new for a 3Y/5Y track record only need the
-    # risk metrics, exit load, AUM and AMC tier -- see LIMITED_HISTORY_CATEGORIES.
+    # Funds with no usable return only need the risk metrics, exit load, AUM and
+    # AMC tier: those under a year old (no Scheme Return at all) and those in a
+    # LIMITED_HISTORY_CATEGORIES sub-category.
+    too_new = df["fund_age_years"] < MIN_HISTORY_YEARS
     relaxed = pd.Series(True, index=df.index)
     for col in LIMITED_HISTORY_REQUIRED_COLUMNS:
         relaxed &= df[col].notna()
-    relaxed &= df["category"].isin(LIMITED_HISTORY_CATEGORIES)
+    relaxed &= df["category"].isin(LIMITED_HISTORY_CATEGORIES) | too_new
 
-    df["limited_history"] = relaxed & ~full
+    df["limited_history"] = too_new | (relaxed & ~full)
     return df[full | relaxed].copy()
 
 
@@ -608,6 +674,7 @@ def compute_category_stats(df):
         stats[cat] = {
             "ret_3y_mean": g["ret_3y"].mean(),
             "ret_5y_mean": g["ret_5y"].mean(),
+            "scheme_return_mean": g["scheme_return"].mean(),
             "sd_mean": g["sd"].mean(),
             "expense_ratio_mean": g["expense_ratio"].mean(),
         }
@@ -618,12 +685,22 @@ def score_fund(row, cat_stats):
     cat = cat_stats.get(row["category"], {})
     scores = {}
 
+    # A return slot with no 3Y / 5Y figure of its own (fund too young for it)
+    # falls back to the fund's Scheme Return, measured against the category's
+    # average Scheme Return -- see compute_scheme_return().
+    cat_scheme_mean = cat.get("scheme_return_mean")
+    excess_scheme = None if cat_scheme_mean is None else row["scheme_return"] - cat_scheme_mean
+
     cat_ret_3y_mean = cat.get("ret_3y_mean")
     excess_3y = None if cat_ret_3y_mean is None else row["ret_3y"] - cat_ret_3y_mean
+    if pd.isna(row["ret_3y"]):
+        excess_3y = excess_scheme
     scores["rolling_returns_3y"] = step_score(excess_3y, ROLLING_RETURNS_BANDS)
 
     cat_ret_5y_mean = cat.get("ret_5y_mean")
     excess_5y = None if cat_ret_5y_mean is None else row["ret_5y"] - cat_ret_5y_mean
+    if pd.isna(row["ret_5y"]):
+        excess_5y = excess_scheme
     scores["rolling_returns_5y"] = step_score(excess_5y, ROLLING_RETURNS_BANDS)
 
     scores["alpha_3y"] = step_score(row["alpha"], ALPHA_BANDS)
@@ -694,6 +771,9 @@ def build_score_rows(df, top_n=None):
             "rating": rating,
             "recommendation": rec,
             "limited_history": bool(row.get("limited_history", False)),
+            "scheme_return": clean(row.get("scheme_return")),
+            "return_basis": clean(row.get("return_basis")),
+            "fund_age_years": clean(row.get("fund_age_years")),
             "category_scores": category_rollup(param_scores),
             "parameter_scores": {k: (round(v, 2) if v is not None else None) for k, v in param_scores.items()},
         })
