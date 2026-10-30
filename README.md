@@ -20,9 +20,11 @@ mutual-fund-dashboard/    React + Vite dashboard
 ## How it works
 
 Two upstream feeds — a scheme master and a risk-metrics set — are joined on the
-scheme code. Funds carrying all 13 parameters form the scored universe; each
-parameter is scored 1–5 against category peers, then weighted into a composite
-that maps to a rating band and a recommendation.
+scheme code. Every Regular-plan fund is ranked: each parameter is scored 1–5 against
+category peers, then weighted into a composite that maps to a rating band and a
+recommendation. A fund missing a parameter is not dropped — it is scored on the
+parameters it has, with the weights renormalized, and its Data completeness
+shows how much of the score is backed by data.
 
 Two properties the design leans on:
 

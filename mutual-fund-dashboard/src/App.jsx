@@ -147,9 +147,9 @@ export default function App() {
       .map((rating) => ({ rating, count: counts.get(rating), tone: RATING_TONES[rating] }))
   }, [sorted])
 
-  /* Funds admitted without a 3Y/5Y track record (see LIMITED_HISTORY_CATEGORIES
-     in the scoring module) -- named in the footer so their scores aren't read
-     as comparable to the fully-scored funds. */
+  /* Funds scored with one or more parameters missing (see CORE_COLUMNS in the
+     scoring module) -- named in the footer so their scores aren't read as
+     comparable to the fully-scored funds. */
   const limitedHistory = useMemo(() => {
     const limited = funds.filter((row) => row.limited_history)
     return { count: limited.length, categories: distinctValues(limited, 'category') }
@@ -481,9 +481,10 @@ export default function App() {
           {limitedHistory.count > 0 ? (
             <p className={styles.footerNote}>
               Note: {limitedHistory.count} funds in {limitedHistory.categories.join(', ')} have limited
-              history (under a year, or too new for 3-year or 5-year returns). They are scored only on the parameters available (risk
-              metrics, exit load, AUM and AMC), so their composite scores rest on less data and are
-              not directly comparable with the other funds. See the Data completeness column for how much
+              data (under a year old, or a parameter the data provider does not carry). They are scored only on
+              the parameters available, so their composite scores rest on less data and are
+              not directly comparable with the other funds. Funds scored on less than half of the
+              parameters are ranked after all the others. See the Data completeness column for how much
               of each score is based on data.
             </p>
           ) : null}

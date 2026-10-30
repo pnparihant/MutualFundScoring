@@ -144,19 +144,22 @@ PARAM_CATEGORY = {
     "amc_reputation": "Fund Quality",
 }
 
-# Parameters required for a fund to enter the scored universe (the
-# "intersection"). AMC Reputation is ~100% covered (AMC-level, not per-scheme)
-# so requiring it barely shrinks the universe. Expense Ratio, Portfolio
-# Concentration and Sector Diversification are deliberately left OUT of this
-# list: Expense Ratio is ~90% covered even after the Direct-plan backfill, and
-# Portfolio Concentration / Sector Diversification (top10_concentration,
-# sector_count) come from CMOTS holdings/sector caches that were only ever
-# built for the original ~1,379-fund Equity universe -- requiring them would
-# silently exclude every Debt/Hybrid/Other/Solution-Oriented fund again. A
-# fund missing any of these three still gets scored -- composite_and_rating()
-# renormalizes the remaining weights instead of dropping the fund.
-REQUIRED_COLUMNS = ["scheme_return", "alpha", "sd", "sharpe", "sortino", "beta",
-                    "exit_load_text", "aum", "amc_reputation_raw"]
+# Raw inputs behind the scored parameters. NO fund is dropped for lacking one of
+# them: a fund missing an input simply has that parameter unscored, and
+# composite_and_rating() renormalizes the remaining weights, so it is still
+# ranked on whatever it does have. A fund missing any of these is flagged
+# `limited_history` (alongside funds under a year old) so the dashboard can say
+# its score rests on less data; `data_completeness` says how much. Only a fund
+# with no scoreable parameter at all cannot be ranked (build_score_rows).
+CORE_COLUMNS = ["scheme_return", "alpha", "sd", "sharpe", "sortino", "beta",
+                "exit_load_text", "aum", "amc_reputation_raw"]
+
+# A fund scored on less than this share of the matrix weight (composite_and_rating's
+# data_completeness) is still scored and shown, but is ranked after every fund
+# that clears it: a composite built from a couple of parameters (a 10%-complete
+# fund can score 5.0 on AMC reputation alone) is not comparable with one built
+# from the whole matrix, and must not outrank it.
+MIN_COMPLETENESS_FOR_RANK = 0.5
 
 # Scheme Return -- the single return figure every fund is scored on:
 #   3Y and 5Y CAGR both available -> 40% 3Y + 60% 5Y (5Y weighted higher since
@@ -176,22 +179,6 @@ BASIS_BLEND = "3Y/5Y blend"
 BASIS_4Y = "4Y CAGR"
 BASIS_3Y = "3Y CAGR"
 BASIS_INCEPTION = "Since inception"
-
-# These sub-categories are made up of funds that are too new to have a 3Y/5Y
-# return (Life Cycle and Sectoral Debt funds have none at all; Balanced Hybrid
-# and the passive "Other Scheme - Index Fund" have no 5Y), so requiring
-# REQUIRED_COLUMNS would leave the whole sub-category out of the dashboard. A
-# fund in one of them is admitted on the risk metrics alone and scored on
-# whatever parameters it has -- composite_and_rating() renormalizes, and the row
-# is flagged `limited_history` so the dashboard can say so. Every other
-# category keeps the full requirement.
-LIMITED_HISTORY_CATEGORIES = {
-    "Sectoral Debt Fund",
-    "Balanced Hybrid Fund",
-    "Life Cycle Fund",
-    "Other Scheme - Index Fund",
-}
-LIMITED_HISTORY_REQUIRED_COLUMNS = [c for c in REQUIRED_COLUMNS if c != "scheme_return"]
 
 # composite-score interpretation, taken verbatim from the matrix's
 # "Rating Scale & Legend" sheet -> "TOTAL WEIGHTED SCORE -- INTERPRETATION"
@@ -287,7 +274,7 @@ def resolve_aum_bucket(category):
     "Large & Mid Cap" is checked before the plain "large"/"cap" match so it
     doesn't get miscategorized as Large-Cap -- it isn't one of the matrix's
     named buckets and is meant to fall back."""
-    if not category:
+    if not isinstance(category, str) or not category.strip():
         return AUM_CATEGORY_FALLBACK, False
     c = category.strip().lower()
 
@@ -364,7 +351,7 @@ def _num(value):
 
 def compute_scheme_return(row):
     """(scheme_return, basis, fund_age_years) for one scheme -- see the Scheme
-    Return note above REQUIRED_COLUMNS. Age runs from LaunchDate to the feed's
+    Return note above CORE_COLUMNS. Age runs from LaunchDate to the feed's
     NAV date. scheme_return/basis are None for a fund younger than a year (or
     with no usable launch date and no return at all)."""
     launch = pd.to_datetime(row.get("LaunchDate"), errors="coerce")
@@ -408,7 +395,7 @@ def build_intersection_universe(master_payload, risk_payload):
     # Regular plans only -- "InDirect Plan" is the raw feed's literal spelling for
     # Regular (as opposed to "Direct Plan"). No MainCategory filter: the universe
     # spans Equity, Debt, Hybrid, Other and Solution-Oriented funds, all scored
-    # with the same matrix (see REQUIRED_COLUMNS and resolve_aum_bucket's fallback
+    # with the same matrix (see CORE_COLUMNS and resolve_aum_bucket's fallback
     # for how non-Equity funds degrade gracefully rather than being excluded).
     df = df[df["InvestmentType1"] == "InDirect Plan"].copy()
 
@@ -427,29 +414,20 @@ def build_intersection_universe(master_payload, risk_payload):
 
     _attach_extra_params(df)
 
-    full = pd.Series(True, index=df.index)
-    for col in REQUIRED_COLUMNS:
-        full &= df[col].notna()
-
-    # Funds with no usable return only need the risk metrics, exit load, AUM and
-    # AMC tier: those under a year old (no Scheme Return at all) and those in a
-    # LIMITED_HISTORY_CATEGORIES sub-category.
+    # Every Regular-plan fund stays in the universe; a missing input just leaves
+    # that parameter unscored (see CORE_COLUMNS). Flag the ones scored on less.
+    complete = pd.Series(True, index=df.index)
+    for col in CORE_COLUMNS:
+        complete &= df[col].notna()
     too_new = df["fund_age_years"] < MIN_HISTORY_YEARS
-    relaxed = pd.Series(True, index=df.index)
-    for col in LIMITED_HISTORY_REQUIRED_COLUMNS:
-        relaxed &= df[col].notna()
-    relaxed &= df["category"].isin(LIMITED_HISTORY_CATEGORIES) | too_new
-
-    df["limited_history"] = too_new | (relaxed & ~full)
-    return df[full | relaxed].copy()
+    df["limited_history"] = too_new | ~complete
+    return df.copy()
 
 
 def _attach_extra_params(df):
     """Adds the 4 new parameters' raw values as columns on df, indexed by
-    schcode. Concentration/sector/AMC reputation are folded into
-    REQUIRED_COLUMNS (see there); expense_ratio is deliberately left out of
-    that list so a fund missing it stays in the universe -- see
-    composite_and_rating()."""
+    schcode. Any of them may be missing for a fund; the fund is
+    still scored on the rest -- see composite_and_rating()."""
     top10 = extra_params.build_top10_concentration()
     sector_counts = extra_params.build_sector_counts()
     expense_lookup = extra_params.build_expense_ratio_lookup()
@@ -778,7 +756,7 @@ def build_score_rows(df, top_n=None):
             "parameter_scores": {k: (round(v, 2) if v is not None else None) for k, v in param_scores.items()},
         })
 
-    rows.sort(key=lambda r: r["composite"], reverse=True)
+    rows.sort(key=lambda r: (r["data_completeness"] < MIN_COMPLETENESS_FOR_RANK, -r["composite"]))
     for i, r in enumerate(rows, start=1):
         r["rank"] = i
 
